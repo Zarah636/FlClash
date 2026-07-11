@@ -12,6 +12,7 @@ import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' show basename;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -110,9 +111,12 @@ class CommonAction extends _$CommonAction {
   }
 }
 
+enum _SetupTaskResult { completed, handoffToCoreRestart }
+
 @Riverpod(keepAlive: true)
 class SetupAction extends _$SetupAction {
   Timer? _updateTimer;
+  final _setupTaskScheduler = SerialTaskScheduler();
   DateTime? startTime;
 
   bool get isStart => startTime != null && startTime!.isBeforeNow;
@@ -131,7 +135,7 @@ class SetupAction extends _$SetupAction {
   void fullSetup() {
     if (!ref.read(initProvider)) return;
     ref.read(delayDataSourceProvider.notifier).value = {};
-    applyProfile(force: true);
+    unawaited(_runSetup(force: true));
     ref.read(logsProvider.notifier).value = FixedList(500);
     ref.read(requestsProvider.notifier).value = FixedList(500);
   }
@@ -183,10 +187,6 @@ class SetupAction extends _$SetupAction {
   Future<void> updateStatus(bool isStart, {bool isInit = false}) async {
     if (isStart) {
       if (!isInit) {
-        final res = await ref
-            .read(coreActionProvider.notifier)
-            .tryStartCore(true);
-        if (res) return;
         if (!ref.read(initProvider)) return;
         await _handleStart();
         applyProfileDebounce(force: true, silence: true);
@@ -218,11 +218,16 @@ class SetupAction extends _$SetupAction {
     debouncer.call(FunctionTag.updateConfig, () async {
       await globalState.safeRun(() async {
         final updateParams = ref.read(updateParamsProvider);
-        final res = await _requestAdmin(updateParams.tun.enable);
-        if (res.isError) return;
-        final realTunEnable = ref.read(realTunEnableProvider);
+        final shouldContinueSetup = await _requestAdmin(
+          updateParams.tun.enable,
+        );
+        if (!shouldContinueSetup) {
+          return;
+        }
         final message = await coreController.updateConfig(
-          updateParams.copyWith.tun(enable: realTunEnable),
+          updateParams.copyWith.tun(
+            enable: _getEffectiveTunEnable(updateParams.tun.enable),
+          ),
         );
         ref.read(checkIpNumProvider.notifier).add();
         if (message.isNotEmpty) throw message;
@@ -267,16 +272,40 @@ class SetupAction extends _$SetupAction {
     bool silence = false,
     bool force = false,
     VoidCallback? preloadInvoke,
-  }) async {
-    await _setupConfig(
+  }) {
+    return _runSetup(
       force: force,
       silence: silence,
       preloadInvoke: preloadInvoke,
-      onUpdated: () async {
-        await ref.read(proxiesActionProvider.notifier).updateGroups();
-        await ref.read(providersProvider.notifier).syncProviders();
-      },
     );
+  }
+
+  Future<void> _runSetup({
+    bool silence = false,
+    bool force = false,
+    VoidCallback? preloadInvoke,
+  }) async {
+    final result = await _setupTaskScheduler.run(() {
+      return _setupConfig(
+        force: force,
+        silence: silence,
+        preloadInvoke: preloadInvoke,
+        onUpdated: () async {
+          await ref.read(proxiesActionProvider.notifier).updateGroups();
+          await ref.read(providersProvider.notifier).syncProviders();
+        },
+      );
+    });
+    if (result != _SetupTaskResult.handoffToCoreRestart) {
+      return;
+    }
+    // Release the current serial task before restartCore reapplies the profile.
+    try {
+      await ref.read(coreActionProvider.notifier).restartCore();
+    } catch (_) {
+      ref.read(authorizedTunEnableProvider.notifier).value =
+          TunAuthorizationState.unauthorized;
+    }
   }
 
   Future<VM2<String, String>> getProfile({
@@ -347,26 +376,40 @@ class SetupAction extends _$SetupAction {
     return '';
   }
 
-  Future<Result<bool>> _requestAdmin(bool enableTun) async {
-    final realTunEnable = ref.read(realTunEnableProvider);
-    if (enableTun != realTunEnable && realTunEnable == false) {
-      final code = await system.authorizeCore();
-      switch (code) {
-        case AuthorizeCode.success:
-          await ref.read(coreActionProvider.notifier).restartCore();
-          return Result.error('');
-        case AuthorizeCode.none:
-          break;
-        case AuthorizeCode.error:
-          enableTun = false;
-          break;
-      }
-    }
-    ref.read(realTunEnableProvider.notifier).value = enableTun;
-    return Result.success(enableTun);
+  bool _getEffectiveTunEnable(bool enableTun) {
+    final authorizationState = ref.read(authorizedTunEnableProvider);
+    return enableTun && authorizationState == TunAuthorizationState.authorized;
   }
 
-  Future<void> _setupConfig({
+  Future<bool> _requestAdmin(bool enableTun) async {
+    if (!enableTun) {
+      return true;
+    }
+    final authorizationState = ref.read(authorizedTunEnableProvider);
+    if (authorizationState != TunAuthorizationState.none) {
+      return true;
+    }
+
+    final authorizationNotifier = ref.read(
+      authorizedTunEnableProvider.notifier,
+    );
+    authorizationNotifier.value = TunAuthorizationState.unauthorized;
+
+    final code = await system.authorizeCore();
+
+    switch (code) {
+      case AuthorizeCode.success:
+        authorizationNotifier.value = TunAuthorizationState.authorized;
+        return false;
+      case AuthorizeCode.none:
+        authorizationNotifier.value = TunAuthorizationState.authorized;
+        return true;
+      case AuthorizeCode.error:
+        return true;
+    }
+  }
+
+  Future<_SetupTaskResult> _setupConfig({
     bool force = false,
     bool silence = false,
     VoidCallback? preloadInvoke,
@@ -378,30 +421,35 @@ class SetupAction extends _$SetupAction {
       profile = nextProfile;
       ref.read(profilesProvider.notifier).put(nextProfile);
     }
-    commonPrint.log('setup ===> ${profile?.id}');
+    commonPrint.log('setup ===> ${profile?.realLabel}');
     final patchConfig = ref.read(patchClashConfigProvider);
-    final res = await _requestAdmin(patchConfig.tun.enable);
-    if (res.isError) return;
-    final realTunEnable = ref.read(realTunEnableProvider);
-    final realPatchConfig = patchConfig.copyWith.tun(enable: realTunEnable);
-    final setupState = await ref.read(setupStateProvider(profile?.id).future);
-    if (system.isAndroid) {
-      globalState.lastVpnState = ref.read(vpnStateProvider);
-      final sharedState = ref.read(sharedStateProvider);
-      preferences.saveShareState(sharedState);
+    final shouldContinueSetup = await _requestAdmin(patchConfig.tun.enable);
+    if (!shouldContinueSetup) {
+      return _SetupTaskResult.handoffToCoreRestart;
     }
+    final effectiveTunEnable = _getEffectiveTunEnable(patchConfig.tun.enable);
+    final realPatchConfig = patchConfig.copyWith.tun(
+      enable: effectiveTunEnable,
+    );
+    final setupState = await ref.read(setupStateProvider(profile?.id).future);
     final vm2 = await getProfile(
       setupState: setupState,
       patchConfig: realPatchConfig,
     );
     final yamlString = vm2.a;
     final yamlMd5 = vm2.b;
-    if (yamlMd5 == globalState.lastConfigMd5 && force == false) return;
+    if (yamlMd5 == globalState.lastConfigMd5 && force == false) {
+      return _SetupTaskResult.completed;
+    }
+    if (system.isAndroid) {
+      globalState.lastVpnState = ref.read(vpnStateProvider);
+      final sharedState = ref.read(sharedStateProvider);
+      await preferences.saveShareState(sharedState);
+    }
     await globalState.loadingRun(
       () async {
         final configFilePath = await appPath.configFilePath;
         await File(configFilePath).safeWriteAsString(yamlString);
-        globalState.lastConfigMd5 = yamlMd5;
         final message = await coreController.setupConfig(
           setupState: setupState,
           params: _setupParams,
@@ -410,12 +458,14 @@ class SetupAction extends _$SetupAction {
         if (message.isNotEmpty && !message.endsWith('is empty')) {
           throw message;
         }
+        globalState.lastConfigMd5 = yamlMd5;
         ref.read(checkIpNumProvider.notifier).add();
         await onUpdated?.call();
       },
       silence: true,
       tag: !silence ? LoadingTag.proxies : null,
     );
+    return _SetupTaskResult.completed;
   }
 }
 
@@ -459,12 +509,12 @@ class BackupAction extends _$BackupAction {
       final configMap = migrationData.configMap;
       if (option == RestoreOption.onlyProfiles || configMap == null) return;
       final config = Config.fromJson(configMap);
+      ref.read(davSettingProvider.notifier).update((_) => config.davProps);
       ref.read(patchClashConfigProvider.notifier).value =
           config.patchClashConfig;
       ref.read(appSettingProvider.notifier).value = config.appSettingProps;
       ref.read(currentProfileIdProvider.notifier).value =
           config.currentProfileId;
-      ref.read(davSettingProvider.notifier).value = config.davProps;
       ref.read(themeSettingProvider.notifier).value = config.themeProps;
       ref.read(windowSettingProvider.notifier).value = config.windowProps;
       ref.read(vpnSettingProvider.notifier).value = config.vpnProps;
@@ -512,32 +562,17 @@ class CoreAction extends _$CoreAction {
     ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
   }
 
-  Future<Result<bool>> requestAdmin(bool enableTun) async {
-    final realTunEnable = ref.read(realTunEnableProvider);
-    if (enableTun != realTunEnable && realTunEnable == false) {
-      final code = await system.authorizeCore();
-      switch (code) {
-        case AuthorizeCode.success:
-          await restartCore();
-          return Result.error('');
-        case AuthorizeCode.none:
-          break;
-        case AuthorizeCode.error:
-          enableTun = false;
-          break;
-      }
-    }
-    ref.read(realTunEnableProvider.notifier).value = enableTun;
-    return Result.success(enableTun);
-  }
-
-  Future<void> restartCore([bool start = false]) async {
+  Future<void> reconnectCore() async {
     final isDisconnected =
         ref.read(coreStatusProvider) == CoreStatus.disconnected;
     ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
     await coreController.shutdown(!isDisconnected);
     await connectCore();
     await initCore();
+  }
+
+  Future<void> restartCore([bool start = false]) async {
+    await reconnectCore();
     if (start || ref.read(isStartProvider)) {
       await ref
           .read(setupActionProvider.notifier)
@@ -545,12 +580,6 @@ class CoreAction extends _$CoreAction {
     } else {
       await ref.read(setupActionProvider.notifier).applyProfile(force: true);
     }
-  }
-
-  Future<bool> tryStartCore([bool start = false]) async {
-    if (coreController.isCompleted) return false;
-    await restartCore(start);
-    return true;
   }
 
   void handleCoreDisconnected() {
@@ -667,17 +696,9 @@ class StoreAction extends _$StoreAction {
       ),
     );
     final pathsToDelete = await shakingProfileTask(VM2(profileIds, scriptIds));
-    if (pathsToDelete.isNotEmpty) {
-      final deleteFutures = pathsToDelete.map((path) async {
-        try {
-          final res = await coreController.deleteFile(path);
-          if (res.isNotEmpty) throw res;
-        } catch (e) {
-          rethrow;
-        }
-      });
-      await Future.wait(deleteFutures);
-    }
+    await Future.wait(
+      pathsToDelete.map((path) => File(path).safeDelete(recursive: true)),
+    );
   }
 
   void savePreferencesDebounce() {
@@ -687,14 +708,31 @@ class StoreAction extends _$StoreAction {
   }
 
   Future handleClear() async {
+    final profileIds = ref
+        .read(profilesProvider)
+        .map((item) => item.id)
+        .toSet();
+    final providersDir = Directory(await appPath.getProvidersRootPath());
+    if (await providersDir.exists()) {
+      await for (final entity in providersDir.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final profileId = int.tryParse(basename(entity.path));
+        if (profileId != null && profileId > 0) {
+          profileIds.add(profileId);
+        }
+      }
+    }
+    final clearResults = await Future.wait(
+      profileIds.map(coreController.clearEffect),
+    );
+    for (final error in clearResults.where((error) => error.isNotEmpty)) {
+      commonPrint.log(error, logLevel: LogLevel.warning);
+    }
     await preferences.clearPreferences();
     commonPrint.log('clear preferences');
     await database.close();
     await File(await appPath.databasePath).safeDelete(recursive: true);
-    final homeDir = Directory(await appPath.profilesPath);
-    await for (final file in homeDir.list(recursive: true)) {
-      await coreController.deleteFile(file.path);
-    }
+    await Directory(await appPath.profilesPath).safeDelete(recursive: true);
     await preferences.clearPreferences();
     ref.read(systemActionProvider.notifier).handleExit(false);
   }
@@ -844,8 +882,8 @@ class ProfilesAction extends _$ProfilesAction {
   }
 
   Future<void> deleteProfile(int id) async {
-    ref.read(profilesProvider.notifier).del(id);
-    clearEffect(id);
+    await ref.read(profilesProvider.notifier).del(id);
+    await clearEffect(id);
     final currentProfileId = ref.read(currentProfileIdProvider);
     if (currentProfileId == id) {
       final profiles = ref.read(profilesProvider);
@@ -964,15 +1002,15 @@ class ProfilesAction extends _$ProfilesAction {
 
   Future<void> clearEffect(int profileId) async {
     final profilePath = await appPath.getProfilePath(profileId.toString());
-    final providersDirPath = await appPath.getProvidersDirPath(
-      profileId.toString(),
-    );
     final profileFile = File(profilePath);
     final isExists = await profileFile.exists();
     if (isExists) {
       await profileFile.safeDelete(recursive: true);
     }
-    await coreController.deleteFile(providersDirPath);
+    final error = await coreController.clearEffect(profileId);
+    if (error.isNotEmpty) {
+      commonPrint.log(error, logLevel: LogLevel.warning);
+    }
   }
 }
 
