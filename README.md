@@ -4,6 +4,15 @@
 
 </div>
 
+> [!IMPORTANT]
+> **这是非官方临时兼容分支。**
+>
+> 本分支仅为 Android 版补充 `ACCESS_BACKGROUND_LOCATION`（“始终允许”位置权限）声明，
+> 用于缓解后台无法读取 Wi-Fi SSID、导致“按需运行”失效的问题。
+> 本项目不提供后续功能更新；待上游 [FlClash #2233](https://github.com/chen08209/FlClash/issues/2233)
+> 正式修复后，本仓库将归档。
+>
+> 使用前请阅读：[临时修复说明与限制](TEMPORARY_BACKGROUND_LOCATION_FIX_zh_CN.md)。
 ## FlClash
 
 [![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
