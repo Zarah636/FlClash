@@ -1,148 +1,75 @@
-<div>
-
-[**简体中文**](README_zh_CN.md)
-
-</div>
+# FlClash Android“按需运行”后台定位临时修复
 
 > [!IMPORTANT]
 > **这是非官方临时兼容分支。**
 >
-> 本分支仅为 Android 版补充 `ACCESS_BACKGROUND_LOCATION`（“始终允许”位置权限）声明，
-> 用于缓解后台无法读取 Wi-Fi SSID、导致“按需运行”失效的问题。
-> 本项目不提供后续功能更新；待上游 [FlClash #2233](https://github.com/chen08209/FlClash/issues/2233)
-> 正式修复后，本仓库将归档。
+> 本项目仅为 Android 版 FlClash 补充“始终允许”位置权限声明，用于缓解应用退到后台后无法读取 Wi-Fi SSID、导致“按需运行”失效的问题。
 >
-> 使用前请阅读：[临时修复说明与限制](TEMPORARY_BACKGROUND_LOCATION_FIX_zh_CN.md)。
-## FlClash
+> 本项目不提供后续功能更新。待上游正式修复该问题后，本仓库将归档。
 
-[![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
+## 下载
 
-[![Channel](https://img.shields.io/badge/Telegram-Channel-blue?style=flat-square&logo=telegram)](https://t.me/FlClash)
+请仅从本仓库的 [GitHub Releases](https://github.com/Zarah636/FlClash/releases/download/v0.8.94-background-location-temp.1/FlClash-0.8.94-arm64-v8a-background-location-dev.apk) 下载，并自行核对 SHA-256。
 
-A multi-platform proxy client based on ClashMeta, simple and easy to use, open-source and ad-free.
+SHA-256：
 
-on Desktop:
-<p style="text-align: center;">
-    <img alt="desktop" src="snapshots/desktop.gif">
-</p>
-
-on Mobile:
-<p style="text-align: center;">
-    <img alt="mobile" src="snapshots/mobile.gif">
-</p>
-
-## Features
-
-✈️ Multi-platform: Android, Windows, macOS and Linux
-
-💻 Adaptive multiple screen sizes, Multiple color themes available
-
-💡 Based on Material You Design, [Surfboard](https://github.com/getsurfboard/surfboard)-like UI
-
-☁️ Supports data sync via WebDAV
-
-✨ Support subscription link, Dark mode
-
-## Use
-
-### Linux
-
-⚠️ Make sure to install the following dependencies before using them
-
-   ```bash
-    sudo apt-get install libayatana-appindicator3-dev
-    sudo apt-get install libkeybinder-3.0-dev
-   ```
-
-### Android
-
-Support the following actions
-
-   ```bash
-    com.follow.clash.action.START
-    
-    com.follow.clash.action.STOP
-    
-    com.follow.clash.action.TOGGLE
-   ```
-
-## Download
-
-<a href="https://chen08209.github.io/FlClash-fdroid-repo/repo?fingerprint=789D6D32668712EF7672F9E58DEEB15FBD6DCEEC5AE7A4371EA72F2AAE8A12FD"><img alt="Get it on F-Droid" src="snapshots/get-it-on-fdroid.svg" width="200px"/></a> <a href="https://github.com/chen08209/FlClash/releases"><img alt="Get it on GitHub" src="snapshots/get-it-on-github.svg" width="200px"/></a>
-
-### Homebrew
-
-```bash
-brew tap chen08209/tap
-brew install --cask flclash
+```text
+4324AC3947249802C53412A49F4D90D4DE9541D4D4F6E2A40CFE5DE7777BD486
 ```
 
-## Build
+## 项目用途
 
-1. Update submodules
-   ```bash
-   git submodule update --init --recursive
-   ```
+Android 版 FlClash 的“按需运行”需要读取当前 Wi-Fi SSID，以判断是否应当启动或停止代理。
 
-2. Install `Flutter` and `Golang` environment
+Android 10 及以上系统对后台位置信息访问有额外限制。如果应用没有在 Android Manifest 中声明 `android.permission.ACCESS_BACKGROUND_LOCATION`，系统不会提供“始终允许”位置权限，应用退到后台后可能无法取得 SSID。
 
-3. Build Application
+本分支只做一项功能改动：
 
-    - android
+```xml
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+```
 
-        1. Install `Android SDK`, `Android NDK`
+对应上游问题：[FlClash #2233](https://github.com/chen08209/FlClash/issues/2233)。
 
-        2. Set `ANDROID_NDK` environment variable
+## 安装与使用
 
-        3. Run build script
+1. 下载并安装本仓库发布的 APK。
+2. 进入 Android 系统的 FlClash 应用权限页面。
+3. 将位置权限设为“始终允许”，并开启精确位置。
+4. 建议将电池使用策略设为“不限制”，同时允许后台运行和自启动。
+5. 在 FlClash 的“按需运行”设置中添加需要启动或停止代理的 Wi-Fi SSID。
 
-           ```bash
-           dart setup.dart android
-           ```
+不同 Android 厂商的权限入口名称可能略有差异。部分系统需要先授予“使用应用时允许”，再到应用详情页改为“始终允许”。
 
-    - windows
+## APK 信息
 
-        1. Requires a Windows client
+| 项目 | 内容 |
+| --- | --- |
+| FlClash 版本 | `0.8.94` |
+| 包名 | `com.follow.clash.dev` |
+| 支持架构 | `arm64-v8a` |
+| 最低 Android | Android 7.0（API 24） |
+| 目标 SDK | 36 |
+| 签名 | Android Debug，APK Signature Scheme v2 |
+| 构建标记 | `PRE` |
 
-        2. Install `GCC`, `Inno Setup`
+## 限制与注意事项
 
-        3. Run build script
+- 这是非官方版本，不代表 FlClash 上游项目。
+- 当前 APK 仅支持 `arm64-v8a`，不适用于 32 位 ARM 或 x86/x86_64 Android 设备。
+- 包名为 `com.follow.clash.dev`，签名与官方版不同，因此会与官方 FlClash 并存，不能覆盖安装官方版本。
+- 本临时版与官方版的数据彼此独立，订阅、配置和设置需要自行重新导入或配置。
+- 本项目不提供应用内自动更新，也不能接收官方 APK 的覆盖升级。
+- 右上角的 `PRE` 只表示预览构建渠道，不影响代理或权限功能。
+- 本修改只补充后台位置权限声明，没有改变 FlClash 的后台服务和生命周期逻辑。
+- 如果厂商系统冻结或终止 FlClash 进程，应用仍无法接收网络变化，后台切换可能延迟或失效。
+- 本构建只验证了 APK Manifest、签名、SHA-256 和 ARM64 原生库，没有覆盖所有 Android 厂商系统及机型。
+- 使用非官方 Debug 签名 APK 的风险由使用者自行承担。
 
-           ```bash
-           dart setup.dart windows
-           ```
+## 维护状态
 
-    - linux
-
-        1. Requires a Linux client
-
-        2. Dependencies are auto-installed by setup script, or manually:
-           ```bash
-           sudo apt-get install -y libayatana-appindicator3-dev libkeybinder-3.0-dev
-           ```
-
-        3. Run build script
-
-           ```bash
-           dart setup.dart linux
-           ```
-
-    - macOS
-
-        1. Requires a macOS client
-
-        2. Run build script
-
-           ```bash
-           dart setup.dart macos
-           ```
-
-## Star
-
-The easiest way to support developers is to click on the star (⭐) at the top of the page.
-
-<p style="text-align: center;">
-    <a href="https://api.star-history.com/svg?repos=chen08209/FlClash&Date">
-        <img alt="start" width=50% src="https://api.star-history.com/svg?repos=chen08209/FlClash&Date"/>
-    </a>
-</p>
+- 本仓库只处理“按需运行缺少始终允许位置权限”这一项问题。
+- 不计划跟随上游持续更新，不增加其他功能。
+- 不保证提供安全更新、依赖更新、系统兼容性更新或技术支持。
+- 上游正式修复 [FlClash #2233](https://github.com/chen08209/FlClash/issues/2233) 后，本仓库将停止发布并归档。
+- FlClash 的版权、商标、功能和后续维护归原项目及其贡献者所有。
