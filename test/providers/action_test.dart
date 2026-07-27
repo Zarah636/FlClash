@@ -203,6 +203,73 @@ void main() {
       },
     );
   });
+
+  group('SetupAction', () {
+    test(
+      'restarts core after newly granting admin during config update',
+      () async {
+        late _AuthorizationSetupAction setupAction;
+        late _RestartRecordingCoreAction coreAction;
+        final container = ProviderContainer(
+          overrides: [
+            setupActionProvider.overrideWith(() {
+              setupAction = _AuthorizationSetupAction([AuthorizeCode.success]);
+              return setupAction;
+            }),
+            coreActionProvider.overrideWith(() {
+              coreAction = _RestartRecordingCoreAction();
+              return coreAction;
+            }),
+          ],
+        );
+        addTearDown(container.dispose);
+        container
+            .read(patchClashConfigProvider.notifier)
+            .update((state) => state.copyWith.tun(enable: true));
+        container.read(setupActionProvider);
+        container.read(coreActionProvider);
+
+        await setupAction.updateConfig();
+
+        expect(setupAction.authorizationRequestCount, 1);
+        expect(
+          container.read(authorizedTunEnableProvider),
+          TunAuthorizationState.authorized,
+        );
+        expect(coreAction.restartCount, 1);
+      },
+    );
+
+    test('retries admin authorization after a failed attempt', () async {
+      late _AuthorizationSetupAction setupAction;
+      final container = ProviderContainer(
+        overrides: [
+          setupActionProvider.overrideWith(() {
+            setupAction = _AuthorizationSetupAction([
+              AuthorizeCode.error,
+              AuthorizeCode.success,
+            ]);
+            return setupAction;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.read(setupActionProvider);
+
+      expect(await setupAction.requestAdmin(true), isTrue);
+      expect(
+        container.read(authorizedTunEnableProvider),
+        TunAuthorizationState.unauthorized,
+      );
+
+      expect(await setupAction.requestAdmin(true), isFalse);
+      expect(setupAction.authorizationRequestCount, 2);
+      expect(
+        container.read(authorizedTunEnableProvider),
+        TunAuthorizationState.authorized,
+      );
+    });
+  });
 }
 
 class _TestProfiles extends Profiles {
@@ -261,5 +328,26 @@ class _TestSetupAction extends SetupAction {
     VoidCallback? preloadInvoke,
   }) async {
     applyProfileCount++;
+  }
+}
+
+class _RestartRecordingCoreAction extends CoreAction {
+  int restartCount = 0;
+
+  @override
+  Future<void> restartCore([bool start = false]) async {
+    restartCount++;
+  }
+}
+
+class _AuthorizationSetupAction extends SetupAction {
+  final List<AuthorizeCode> authorizationResults;
+  int authorizationRequestCount = 0;
+
+  _AuthorizationSetupAction(this.authorizationResults);
+
+  @override
+  Future<AuthorizeCode> authorizeCore() async {
+    return authorizationResults[authorizationRequestCount++];
   }
 }

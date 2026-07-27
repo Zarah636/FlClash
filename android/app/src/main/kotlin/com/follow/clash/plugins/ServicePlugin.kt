@@ -95,15 +95,13 @@ class ServicePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     private fun start(result: MethodChannel.Result) {
-        scope.launch {
-            result.success(ServiceState.requestStart().await())
-        }
+        ServiceState.requestStart()
+        result.success(true)
     }
 
     private fun stop(result: MethodChannel.Result) {
-        scope.launch {
-            result.success(ServiceState.requestStop().await())
-        }
+        ServiceState.requestStop()
+        result.success(true)
     }
 
     private fun sendEvent(value: String?) {

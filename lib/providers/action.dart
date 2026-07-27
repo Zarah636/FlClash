@@ -215,23 +215,25 @@ class SetupAction extends _$SetupAction {
   }
 
   Future<void> updateConfigDebounce() async {
-    debouncer.call(FunctionTag.updateConfig, () async {
-      await globalState.safeRun(() async {
-        final updateParams = ref.read(updateParamsProvider);
-        final shouldContinueSetup = await _requestAdmin(
-          updateParams.tun.enable,
-        );
-        if (!shouldContinueSetup) {
-          return;
-        }
-        final message = await coreController.updateConfig(
-          updateParams.copyWith.tun(
-            enable: _getEffectiveTunEnable(updateParams.tun.enable),
-          ),
-        );
-        ref.read(checkIpNumProvider.notifier).add();
-        if (message.isNotEmpty) throw message;
-      });
+    debouncer.call(FunctionTag.updateConfig, updateConfig);
+  }
+
+  @visibleForTesting
+  Future<void> updateConfig() async {
+    await globalState.safeRun(() async {
+      final updateParams = ref.read(updateParamsProvider);
+      final shouldContinueSetup = await requestAdmin(updateParams.tun.enable);
+      if (!shouldContinueSetup) {
+        await _restartCoreAfterAuthorization();
+        return;
+      }
+      final message = await coreController.updateConfig(
+        updateParams.copyWith.tun(
+          enable: _getEffectiveTunEnable(updateParams.tun.enable),
+        ),
+      );
+      ref.read(checkIpNumProvider.notifier).add();
+      if (message.isNotEmpty) throw message;
     });
   }
 
@@ -300,6 +302,10 @@ class SetupAction extends _$SetupAction {
       return;
     }
     // Release the current serial task before restartCore reapplies the profile.
+    await _restartCoreAfterAuthorization();
+  }
+
+  Future<void> _restartCoreAfterAuthorization() async {
     try {
       await ref.read(coreActionProvider.notifier).restartCore();
     } catch (_) {
@@ -381,12 +387,18 @@ class SetupAction extends _$SetupAction {
     return enableTun && authorizationState == TunAuthorizationState.authorized;
   }
 
-  Future<bool> _requestAdmin(bool enableTun) async {
+  @protected
+  Future<AuthorizeCode> authorizeCore() {
+    return system.authorizeCore();
+  }
+
+  @visibleForTesting
+  Future<bool> requestAdmin(bool enableTun) async {
     if (!enableTun) {
       return true;
     }
     final authorizationState = ref.read(authorizedTunEnableProvider);
-    if (authorizationState != TunAuthorizationState.none) {
+    if (authorizationState == TunAuthorizationState.authorized) {
       return true;
     }
 
@@ -395,7 +407,7 @@ class SetupAction extends _$SetupAction {
     );
     authorizationNotifier.value = TunAuthorizationState.unauthorized;
 
-    final code = await system.authorizeCore();
+    final code = await authorizeCore();
 
     switch (code) {
       case AuthorizeCode.success:
@@ -423,7 +435,7 @@ class SetupAction extends _$SetupAction {
     }
     commonPrint.log('setup ===> ${profile?.realLabel}');
     final patchConfig = ref.read(patchClashConfigProvider);
-    final shouldContinueSetup = await _requestAdmin(patchConfig.tun.enable);
+    final shouldContinueSetup = await requestAdmin(patchConfig.tun.enable);
     if (!shouldContinueSetup) {
       return _SetupTaskResult.handoffToCoreRestart;
     }
