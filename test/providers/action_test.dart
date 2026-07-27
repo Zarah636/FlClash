@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/database.dart';
+import 'package:fl_clash/providers/state.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
@@ -205,6 +208,102 @@ void main() {
   });
 
   group('SetupAction', () {
+    group('rapid status changes', () {
+      test('updates runtime and traffic while core start is pending', () async {
+        final startCompleter = Completer<bool>();
+        final container = ProviderContainer(
+          overrides: [
+            initProvider.overrideWithBuild((_, _) => true),
+            commonActionProvider.overrideWith(_RaceCommonAction.new),
+            setupActionProvider.overrideWith(_RaceSetupAction.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        final action =
+            container.read(setupActionProvider.notifier) as _RaceSetupAction;
+        final commonAction =
+            container.read(commonActionProvider.notifier) as _RaceCommonAction;
+        action.startCompleter = startCompleter;
+
+        final startFuture = action.updateStatus(true);
+        final initialRunTime = container.read(runTimeProvider)!;
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+        expect(container.read(runTimeProvider), greaterThan(initialRunTime));
+        expect(commonAction.updateTrafficCount, greaterThanOrEqualTo(2));
+
+        startCompleter.complete(true);
+        await startFuture;
+
+        await action.handleStop();
+      });
+
+      test('newer start prevents stale stop cleanup', () async {
+        final stopCompleter = Completer<bool>();
+        final container = ProviderContainer(
+          overrides: [
+            initProvider.overrideWithBuild((_, _) => true),
+            commonActionProvider.overrideWith(_RaceCommonAction.new),
+            setupActionProvider.overrideWith(_RaceSetupAction.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        final action =
+            container.read(setupActionProvider.notifier) as _RaceSetupAction;
+        action.stopCompleter = stopCompleter;
+        action.startTime = DateTime.now().subtract(const Duration(seconds: 1));
+        container.read(runTimeProvider.notifier).value = 1;
+
+        final stopFuture = action.updateStatus(false);
+        await Future<void>.delayed(Duration.zero);
+        final startFuture = action.updateStatus(true);
+        await startFuture;
+
+        expect(action.startTime, isNotNull);
+        expect(container.read(runTimeProvider), isNotNull);
+        expect(action.applyProfileDebounceCount, 1);
+
+        stopCompleter.complete(true);
+        await stopFuture;
+
+        expect(action.startTime, isNotNull);
+        expect(container.read(runTimeProvider), isNotNull);
+        expect(container.read(isStartProvider), isTrue);
+
+        await action.handleStop();
+      });
+
+      test('newer stop prevents stale start continuation', () async {
+        final startCompleter = Completer<bool>();
+        final container = ProviderContainer(
+          overrides: [
+            initProvider.overrideWithBuild((_, _) => true),
+            commonActionProvider.overrideWith(_RaceCommonAction.new),
+            setupActionProvider.overrideWith(_RaceSetupAction.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        final action =
+            container.read(setupActionProvider.notifier) as _RaceSetupAction;
+        action.startCompleter = startCompleter;
+
+        final startFuture = action.updateStatus(true);
+        await Future<void>.delayed(Duration.zero);
+        await action.updateStatus(false);
+
+        expect(action.startTime, isNull);
+        expect(container.read(runTimeProvider), isNull);
+
+        startCompleter.complete(true);
+        await startFuture;
+
+        expect(action.startTime, isNull);
+        expect(container.read(runTimeProvider), isNull);
+        expect(container.read(isStartProvider), isFalse);
+        expect(action.applyProfileDebounceCount, 0);
+      });
+    });
+
     test(
       'restarts core after newly granting admin during config update',
       () async {
@@ -349,5 +448,38 @@ class _AuthorizationSetupAction extends SetupAction {
   @override
   Future<AuthorizeCode> authorizeCore() async {
     return authorizationResults[authorizationRequestCount++];
+  }
+}
+
+class _RaceSetupAction extends SetupAction {
+  int applyProfileDebounceCount = 0;
+  Completer<bool>? startCompleter;
+  Completer<bool>? stopCompleter;
+
+  @override
+  void applyProfileDebounce({bool silence = false, bool force = false}) {
+    applyProfileDebounceCount++;
+  }
+
+  @override
+  Future<bool> startCoreListener() async {
+    return await startCompleter?.future ?? true;
+  }
+
+  @override
+  Future<bool> stopCoreListener() async {
+    return await stopCompleter?.future ?? true;
+  }
+
+  @override
+  void resetCoreTraffic() {}
+}
+
+class _RaceCommonAction extends CommonAction {
+  int updateTrafficCount = 0;
+
+  @override
+  Future<void> updateTraffic() async {
+    updateTrafficCount++;
   }
 }

@@ -140,29 +140,33 @@ class SetupAction extends _$SetupAction {
     ref.read(requestsProvider.notifier).value = FixedList(500);
   }
 
-  Future<void> _handleStart() async {
+  Future<bool> _handleStart() async {
     startTime ??= DateTime.now();
     //The local status must be updated when performing the run task
     ref.read(commonActionProvider.notifier).updateRunTime();
     ref.read(commonActionProvider.notifier).updateTraffic();
-    if (!ref.read(suspendProvider)) {
-      await coreController.startListener();
-    }
+    _updateTimer?.cancel();
     _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       ref.read(commonActionProvider.notifier).updateRunTime();
       ref.read(commonActionProvider.notifier).updateTraffic();
     });
+    if (!ref.read(suspendProvider)) {
+      await startCoreListener();
+    }
+    return startTime != null;
   }
 
   Future _updateStartTime() async {
     startTime = await service?.getRunTime();
   }
 
-  Future handleStop() async {
+  Future<bool> handleStop() async {
     startTime = null;
     _updateTimer?.cancel();
     _updateTimer = null;
-    await coreController.stopListener();
+    debouncer.cancel(FunctionTag.applyProfile);
+    await stopCoreListener();
+    return startTime == null;
   }
 
   Future<void> initStatus() async {
@@ -188,7 +192,8 @@ class SetupAction extends _$SetupAction {
     if (isStart) {
       if (!isInit) {
         if (!ref.read(initProvider)) return;
-        await _handleStart();
+        final current = await _handleStart();
+        if (!current) return;
         applyProfileDebounce(force: true, silence: true);
       } else {
         globalState.needInitStatus = false;
@@ -205,8 +210,9 @@ class SetupAction extends _$SetupAction {
         }
       }
     } else {
-      await handleStop();
-      coreController.resetTraffic();
+      final current = await handleStop();
+      if (!current) return;
+      resetCoreTraffic();
       ref.read(trafficsProvider.notifier).clear();
       ref.read(totalTrafficProvider.notifier).value = const Traffic();
       ref.read(runTimeProvider.notifier).value = null;
@@ -216,6 +222,21 @@ class SetupAction extends _$SetupAction {
 
   Future<void> updateConfigDebounce() async {
     debouncer.call(FunctionTag.updateConfig, updateConfig);
+  }
+
+  @protected
+  Future<bool> startCoreListener() {
+    return coreController.startListener();
+  }
+
+  @protected
+  Future<bool> stopCoreListener() {
+    return coreController.stopListener();
+  }
+
+  @protected
+  void resetCoreTraffic() {
+    coreController.resetTraffic();
   }
 
   @visibleForTesting
